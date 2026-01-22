@@ -50,6 +50,8 @@ std::uint16_t Flags::GetBits(const Flags::Bits bits) const
         result[3] = bitset[0];
         return result.to_ulong();
     }
+    default:
+        throw std::runtime_error("unknown flags");
     }
 }
 
@@ -151,10 +153,26 @@ void Query::ParseQuestion(const std::vector<std::byte>& bytes)
         throw std::runtime_error("insufficient DNS question length");
     }
 
-    // TODO: добавьте десериализацию секции question из массива
-    // байт bytes. В первых 12 элементах массива находится
-    // заголовок header, question находится сразу после него.
-    // В этом методе необходимо заполнить поле this->question.
+    std::string name{};
+    auto data_ptr = bytes.data() + 12;
+
+    while (std::to_integer<size_t>(*data_ptr) != 0)
+    {
+        auto subsection_length = std::to_integer<size_t>(*data_ptr);
+        ++data_ptr;
+
+        name.append((const char*)(data_ptr), subsection_length);
+        name += ".";
+
+        data_ptr += subsection_length;
+    }
+    ++data_ptr;
+    question.name = name;
+
+    std::memcpy(&question.type, data_ptr, 2);
+    question.type = ntohs(question.type);
+    std::memcpy(&question.classCode, data_ptr + 2, 2);
+    question.classCode = ntohs(question.classCode);
 }
 
 
@@ -189,12 +207,36 @@ void Response::SerializeHeader(std::vector<std::byte>& bytes) const
     std::memcpy(&bytes[10], &numberOfAdditionalRRs, 2);
 }
 
-void Response::SerializeQuestion(
-    [[maybe_unused]] std::vector<std::byte>& bytes) const
+void Response::SerializeQuestion(std::vector<std::byte>& bytes) const
 {
-    // TODO: добавьте сериализацию поля this->question в массив
-    // байтов bytes. Bytes уже содержит сериализованный заголовок
-    // header, question необходимо добавить в конец массива.
+    bytes.resize(bytes.size() + question.name.size() + 1 + /*type*/ 2 +
+                 /*classCode*/ 2);
+
+    uint8_t subsection_length = 0;
+    size_t subsection_start = 0;
+    auto data_ptr = bytes.data() + sizeof(header);
+    for (size_t i = 0; i < question.name.size(); ++i)
+    {
+        if (question.name[i] != '.')
+        {
+            ++subsection_length;
+            continue;
+        }
+
+        *data_ptr++ = static_cast<std::byte>(subsection_length);
+        std::memcpy(data_ptr, question.name.data() + subsection_start,
+            subsection_length);
+        data_ptr += subsection_length;
+
+        subsection_start = i + 1;
+        subsection_length = 0;
+    }
+    *data_ptr++ = std::byte{0};
+
+    uint16_t type = htons(question.type);
+    uint16_t class_code = htons(question.classCode);
+    std::memcpy(data_ptr, &type, 2);
+    std::memcpy(data_ptr + 2, &class_code, 2);
 }
 
 } // namespace dns
